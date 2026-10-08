@@ -1,0 +1,14 @@
+build/
+.build/
+.swiftpm/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+
+# Local credentials and signing material
+.env
+.env.*
+*.p12
+*.pfx
+*.pem
+*.key
