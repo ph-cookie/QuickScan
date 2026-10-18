@@ -35,7 +35,7 @@ macOS 13 Ventura以降に対応。Apple Silicon・Intel両対応のUniversalア�
 
 ## インストール
 
-現在、Developer ID署名・公証済みの配布版は提供していません。ソースからビルドする場合は、**Xcode 15以降（Swift 5.9以降）**を用意してください。
+現在、Developer ID署名・公証済みの配布版は提供していません。ソースからビルドする場合は、**Xcode 15以降（Swift 5.9以降）** を用意してください。
 
 ```bash
 git clone https://github.com/ph-cookie/QuickScan.git
