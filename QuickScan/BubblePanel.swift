@@ -4,6 +4,8 @@ enum Timing {
     static let keyGuard: TimeInterval = 0.4
     static let bubbleIdle: TimeInterval = 15
     static let cameraIdle: TimeInterval = 30
+    /// Minimum interval between Vision passes on camera frames.
+    static let cameraAnalysis: CFTimeInterval = 0.15
     static let fade: TimeInterval = 0.12
 }
 final class KeyPanel: NSPanel {
@@ -15,6 +17,15 @@ final class KeyPanel: NSPanel {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command), event.keyCode == 8 { keyAction?(event); return true }
         return super.performKeyEquivalent(with: event)
+    }
+    /// When true, a drag starting anywhere except on a button moves the panel.
+    var movableAnywhere = false
+    override func sendEvent(_ event: NSEvent) {
+        if movableAnywhere, event.type == .leftMouseDown,
+           !(contentView?.hitTest(event.locationInWindow) is NSButton) {
+            performDrag(with: event); return
+        }
+        super.sendEvent(event)
     }
 }
 func floatingPanel(size: NSSize, near point: NSPoint) -> KeyPanel {

@@ -1,11 +1,18 @@
 import AppKit
 import AVFoundation
+import Vision
 
-final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+final class CameraScanner: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let queue = DispatchQueue(label: "org.quickscan.camera", qos: .userInitiated, autoreleaseFrequency: .workItem)
+    // Frames arrive on their own queue so stopRunning() is never called from the frame callback.
+    private let frameQueue = DispatchQueue(label: "org.quickscan.camera.frames", qos: .userInitiated, autoreleaseFrequency: .workItem)
+    // frameQueue-only state.
+    private let request: VNDetectBarcodesRequest
+    private var lastAnalysis: CFTimeInterval = 0
+    private var found = false
     // Session/output/devices live only for this scanner's active lifetime.
     private var session: AVCaptureSession?
-    private var output: AVCaptureMetadataOutput?
+    private var output: AVCaptureVideoDataOutput?
     private var devices: [AVCaptureDevice] = []
     private var deviceIndex = 0
     private var stopping = false
@@ -15,7 +22,7 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
     private let all: Bool
     private let anchor: NSPoint
     var finished: (([ScanCode]?, String?, NSPoint) -> Void)?
-    init(all: Bool, near anchor: NSPoint) { self.all = all; self.anchor = anchor; super.init() }
+    init(all: Bool, near anchor: NSPoint) { self.all = all; self.anchor = anchor; request = Decoder.request(all: all); super.init() }
     func start() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: configure()
@@ -30,7 +37,7 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
     private func loadingPanel(_ message: String) {
         if panel == nil {
             let p = floatingPanel(size: NSSize(width: 380, height: 280), near: anchor)
-            panel = p; p.keyAction = { [weak self] event in
+            panel = p; p.movableAnywhere = true; p.keyAction = { [weak self] event in
                 if event.keyCode == 53 { self?.stop() }
                 else { self?.armTimer(); if event.keyCode == 48 { self?.switchCamera() } }
             }
@@ -62,10 +69,10 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
                 s.sessionPreset = .medium
                 let input = try AVCaptureDeviceInput(device: devices[deviceIndex])
                 guard s.canAddInput(input) else { throw CameraError.unavailable }; s.addInput(input)
-                let o = AVCaptureMetadataOutput()
+                let o = AVCaptureVideoDataOutput()
+                o.alwaysDiscardsLateVideoFrames = true
                 guard s.canAddOutput(o) else { throw CameraError.unavailable }; s.addOutput(o)
-                o.setMetadataObjectsDelegate(self, queue: queue)
-                o.metadataObjectTypes = Decoder.enabled(all: all).map(\.camera).filter { o.availableMetadataObjectTypes.contains($0) }
+                o.setSampleBufferDelegate(self, queue: frameQueue)
                 s.commitConfiguration(); session = s; output = o
                 s.startRunning()
                 guard s.isRunning else { throw CameraError.unavailable }
@@ -96,7 +103,6 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
                 previous.forEach { s.removeInput($0) }
                 if s.canAddInput(input) { s.addInput(input); deviceIndex = next }
                 else { previous.forEach { if s.canAddInput($0) { s.addInput($0) } } }
-                if let o = output { o.metadataObjectTypes = Decoder.enabled(all: all).map(\.camera).filter { o.availableMetadataObjectTypes.contains($0) } }
                 s.commitConfiguration()
                 DispatchQueue.main.async { [weak self] in
                     if let c = self?.preview?.connection, c.isVideoMirroringSupported { c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = false }
@@ -104,12 +110,14 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
             } catch { finishOnQueue(codes: nil, error: "カメラを切り替えられませんでした") }
         }
     }
-    func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
-        let codes = Decoder.unique(metadataObjects.compactMap { object -> ScanCode? in
-            guard let code = object as? AVMetadataMachineReadableCodeObject, let value = code.stringValue else { return nil }
-            return Decoder.code(value, name: Decoder.formats.first { $0.camera == code.type }?.name ?? code.type.rawValue)
-        })
-        if !codes.isEmpty { finishOnQueue(codes: codes, error: nil) }
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // Late frames are dropped by the output; analysis is also thinned to bound CPU use.
+        let now = CACurrentMediaTime()
+        guard !found, now - lastAnalysis >= Timing.cameraAnalysis, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        lastAnalysis = now
+        guard let codes = try? Decoder.decode(VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up), request: request), !codes.isEmpty else { return }
+        found = true
+        queue.async { [self] in finishOnQueue(codes: codes, error: nil) }
     }
     private func armTimer() {
         timer?.invalidate()
@@ -117,12 +125,13 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
     }
     func stop() {
         timer?.invalidate(); timer = nil
-        preview?.session = nil; preview?.removeFromSuperlayer(); preview = nil
+        // Detach the preview only after stopRunning(); removing it from a running session
+        // reconfigures the device and briefly restarts the camera.
         queue.async { [self] in finishOnQueue(codes: nil, error: nil) }
     }
     private func finishOnQueue(codes: [ScanCode]?, error: String?) {
         guard !stopping else { return }; stopping = true
-        output?.setMetadataObjectsDelegate(nil, queue: nil)
+        output?.setSampleBufferDelegate(nil, queue: nil)
         session?.stopRunning()
         session?.inputs.forEach { session?.removeInput($0) }
         session?.outputs.forEach { session?.removeOutput($0) }
