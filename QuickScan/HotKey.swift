@@ -4,8 +4,8 @@ import Carbon
 struct KeyBinding: Equatable {
     var code: UInt32
     var modifiers: UInt32
-    static let screen = KeyBinding(code: 12, modifiers: UInt32(optionKey | cmdKey))
-    static let camera = KeyBinding(code: 12, modifiers: UInt32(optionKey | cmdKey | shiftKey))
+    static let screen = KeyBinding(code: 12, modifiers: UInt32(optionKey | controlKey))
+    static let camera = KeyBinding(code: 12, modifiers: UInt32(optionKey | controlKey | shiftKey))
     var label: String {
         var s = ""
         if modifiers & UInt32(controlKey) != 0 { s += "⌃" }
